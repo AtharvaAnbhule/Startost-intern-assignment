@@ -3,7 +3,7 @@ import dotenv from "dotenv";
 
 dotenv.config(); // Load environment variables
 
-// ✅ Exponential backoff for OpenAI rate limits
+// ✅ Exponential backoff for API rate limits
 async function retryRequest(url, data, headers, retries = 3) {
   for (let i = 0; i < retries; i++) {
     try {
@@ -26,45 +26,84 @@ async function retryRequest(url, data, headers, retries = 3) {
       }
     }
   }
-  throw new Error("❌ OpenAI API failed after retries");
+  throw new Error("❌ Mistral API failed after retries");
 }
 
-// ✅ Calls OpenAI GPT-4 API
+// ✅ Calls Mistral AI API
 export async function callLLM(query) {
-  if (!process.env.OPENAI_API_KEY) {
-    console.error("❌ OPENAI_API_KEY is missing in .env");
+  if (!process.env.MISTRAL_API_KEY) {
+    console.error("❌ MISTRAL_API_KEY is missing in .env");
     return { match: false };
   }
 
   try {
-    console.log(`🔍 Calling OpenAI with query: "${query}"`);
+    console.log(`🔍 Calling Mistral AI with query: "${query}"`);
 
-    const response = await retryRequest(
-      "https://api.openai.com/v1/chat/completions",
+    const response = await axios.post(
+      "https://api.mistral.ai/v1/chat/completions",
       {
-        model: "gpt-4o",
+        model: "mistral-small",
         messages: [
-          { role: "system", content: "You are an entity recognition AI." },
-          { role: "user", content: `Determine if "${query}" maps to an existing entity.` },
+          {
+            role: "system",
+            content: `You are an entity normalization AI specializing in Hebrew text.
+                      Always respond in **valid JSON format**:
+                      {
+                        "match": true/false, 
+                        "canonicalName": "Entity Name in Hebrew", 
+                        "variations": ["variation1 (Hebrew)", "variation2 (Hebrew)", "variation3 (Hebrew)"], 
+                        "category": "Category Name (if applicable)"
+                      }.
+                      - Ensure variations do **not** contain extra spaces.
+                      - Remove any unnecessary spaces between Hebrew letters.
+                      - Convert similar words to the same variation.
+                      - Do **not** include English translations. 
+                      - Only return JSON. No explanations.`
+          },
+          { role: "user", content: `Normalize the Hebrew entity: "${query}" and provide at least 3 Hebrew variations with no extra spaces.` },
         ],
-        max_tokens: 50,
+        max_tokens: 150,
       },
       {
-        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-        "Content-Type": "application/json",
+        headers: {
+          Authorization: `Bearer ${process.env.MISTRAL_API_KEY}`,
+          "Content-Type": "application/json",
+        },
       }
     );
 
-    const result = response.data.choices[0].message.content.trim();
-    console.log("✅ LLM Response:", result);
+    console.log("✅ Raw Mistral AI Response:", JSON.stringify(response.data, null, 2));
 
-    const match = result.match(/match found:\s*(.+)/i);
-    if (match) {
-      return { match: true, canonicalName: match[1].trim() };
+    if (response.data.choices && response.data.choices.length > 0) {
+      const messageContent = response.data.choices[0].message.content.trim();
+
+      console.log("🛑 Raw Content Before Parsing:", messageContent); // Debug log
+
+      try {
+        const parsedResult = JSON.parse(messageContent);
+
+        // ✅ Print parsed result for debugging
+        console.log("✅ Parsed Result Before Cleanup:", parsedResult);
+
+        // ✅ Remove spaces from Hebrew variations
+        parsedResult.variations = parsedResult.variations.map(variation =>
+          variation.replace(/\s+/g, "") // Removes all spaces
+        );
+
+        console.log("✅ Cleaned Hebrew Variations:", parsedResult);
+        return parsedResult;
+      } catch (error) {
+        console.error("❌ JSON Parsing Error:", messageContent);
+        return { match: false, canonicalName: null, variations: [], category: "unknown" };
+      }
     }
-    return { match: false };
+
+    return { match: false, canonicalName: null, variations: [], category: "unknown" };
   } catch (error) {
-    console.error("❌ LLM API Error:", error.message);
-    return { match: false };
+    console.error("❌ Mistral API Error:", error.message);
+    return { match: false, canonicalName: null, variations: [], category: "unknown" };
   }
 }
+
+
+
